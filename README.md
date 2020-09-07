@@ -9,6 +9,8 @@ This can be used to play a sound when doors are opened, faucets are left running
 
 This uses a D1 Mini WIFI module, an Adafruit MAX 98357A I2S Audio DAC & amplifier, and a custom PCB.
 
+Most of the base software is from Mr. DIY and all the write-ups can be found on his GitLab page: https://gitlab.com/MrDIYca/mrdiy-audio-notifier
+
 STP files are located on Thingiverse: https://www.thingiverse.com/thing:4590242
 
 ![PCB mounted inside base unit](PCBinBase.png)
