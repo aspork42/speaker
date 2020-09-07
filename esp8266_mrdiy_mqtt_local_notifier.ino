@@ -118,6 +118,8 @@ PubSubClient              mqttClient(wifiClient);
 #define  port             1883
 #define  MQTT_MSG_SIZE    256
 
+#define LED_Pin 0 // for the external LED pin.
+
 // AudioRelated ---------------------------
 float volume_level              = 0.8;
 String playing_status;
@@ -125,8 +127,15 @@ const int preallocateBufferSize = 2048;
 void *preallocateBuffer         = NULL;
 byte i;
 
+//Get chip ID to append to ThingName to make unique
+#ifdef ESP8266
+String ChipId = String(ESP.getChipId(), HEX);
+#elif ESP32
+String ChipId = String((uint32_t)ESP.getEfuseMac(), HEX);
+#endif
+
 // WifiManager -----------------------------
-#define thingName  "MrDIY Notifier"
+String thingName = String("MrDIY Notifier - ") + ChipId; 
 #define wifiInitialApPassword "mrdiy.ca"
 char mqttServer[16];
 char mqttUserName[32];
@@ -135,7 +144,7 @@ char mqttTopicPrefix[32];
 char mqttTopic[MQTT_MSG_SIZE];
 DNSServer             dnsServer;
 WebServer             server(80);
-IotWebConf            iotWebConf(thingName, &dnsServer, &server, wifiInitialApPassword, "mrd2");
+IotWebConf            iotWebConf(thingName.c_str(), &dnsServer, &server, wifiInitialApPassword, "JamesOGorman");
 IotWebConfParameter   mqttServerParam = IotWebConfParameter("MQTT server", "mqttServer", mqttServer, sizeof(mqttServer) );
 IotWebConfParameter   mqttUserNameParam = IotWebConfParameter("MQTT username", "mqttUser", mqttUserName, sizeof(mqttUserName));
 IotWebConfParameter   mqttUserPasswordParam = IotWebConfParameter("MQTT password", "mqttPass", mqttUserPassword, sizeof(mqttUserPassword), "password");
@@ -150,6 +159,8 @@ boolean willRetain = false;
 /* ################################## Setup ############################################# */
 
 void setup() {
+  pinMode(LED_Pin, OUTPUT); // LED pin
+  analogWrite(LED_Pin, 100);
 
 #ifdef DEBUG_FLAG
   Serial.begin(115200);
@@ -225,6 +236,7 @@ void playBootSound() {
 }
 
 void stopPlaying() {
+  analogWrite(LED_Pin, 255); //Turn LED back to full brightness
 
   if (mp3) {
 #ifdef DEBUG_FLAG
@@ -266,7 +278,7 @@ void stopPlaying() {
     delete file_icy;
     file_icy = NULL;
   }
-  broadcastStatus("idle");
+  broadcastStatus("status", "idle");
 }
 
 /* ################################## MQTT ############################################### */
@@ -290,14 +302,15 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length)  {
       stopPlaying();
       file_http = new AudioFileSourceHTTPStream();
       if ( file_http->open(newMsg)) {
-        broadcastStatus("playing");
+        broadcastStatus("status", "playing");
+        analogWrite(LED_Pin, 100); // Dim LED while playing
         buff = new AudioFileSourceBuffer(file_http, preallocateBuffer, preallocateBufferSize);
         mp3 = new AudioGeneratorMP3();
         mp3->begin(buff, out);
       } else {
         stopPlaying();
-        broadcastStatus("error");
-        broadcastStatus("idle");
+        broadcastStatus("status", "error");
+        broadcastStatus("status", "idle");
       }
     }
 
@@ -306,36 +319,39 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length)  {
       stopPlaying();
       file_icy = new AudioFileSourceICYStream();
       if ( file_icy->open(newMsg)) {
-        broadcastStatus("playing");
+        broadcastStatus("status", "playing");
+        analogWrite(LED_Pin, 100); // Dim LED while playing
         buff = new AudioFileSourceBuffer(file_icy, preallocateBuffer, preallocateBufferSize);
         mp3 = new AudioGeneratorMP3();
         mp3->begin(buff, out);
       } else {
         stopPlaying();
-        broadcastStatus("error");
-        broadcastStatus("idle");
+        broadcastStatus("status", "error");
+        broadcastStatus("status", "idle");
       }
     }
 
     // got a tone request --------------------------------------------------
     if ( !strcmp(topic, mqttFullTopic("tone") ) ) {
       stopPlaying();
-      broadcastStatus("playing");
+      broadcastStatus("status", "playing");
+      analogWrite(LED_Pin, 100); // Dim LED while playing
       file_progmem = new AudioFileSourcePROGMEM( newMsg, sizeof(newMsg) );
       rtttl = new AudioGeneratorRTTTL();
       rtttl->begin(file_progmem, out);
-      broadcastStatus("idle");
+      broadcastStatus("status", "idle");
     }
 
     //got a TTS request ----------------------------------------------------
     if ( !strcmp(topic, mqttFullTopic("say"))) {
       stopPlaying();
-      broadcastStatus("playing");
+      broadcastStatus("status", "playing");
+      analogWrite(LED_Pin, 100); // Dim LED while playing
       ESP8266SAM *sam = new ESP8266SAM;
       sam->Say(out, newMsg);
       delete sam;
       stopPlaying();
-      broadcastStatus("idle");
+      broadcastStatus("status", "idle");
     }
 
     // got a volume request, expecting double [0.0,1.0] ---------------------
@@ -353,12 +369,12 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length)  {
   }
 }
 
-void broadcastStatus(String msg) {
+void broadcastStatus(char topic[], String msg) {
 
   if ( playing_status != msg) {
     char charBuf[msg.length() + 1];
     msg.toCharArray(charBuf, msg.length() + 1);
-    mqttClient.publish(mqttFullTopic("status"), charBuf);
+    mqttClient.publish(mqttFullTopic(topic), charBuf);
     playing_status = msg;
 #ifdef DEBUG_FLAG
     Serial.println();
@@ -368,11 +384,14 @@ void broadcastStatus(String msg) {
   }
 }
 
+
 void mqttReconnect() {
 
   if (!mqttClient.connected()) {
-    if (mqttClient.connect("MrDIY Notifier", mqttUserName, mqttUserPassword, mqttFullTopic(willTopic), willQoS, willRetain, willMessage)) {
-      broadcastStatus("connected");
+    analogWrite(LED_Pin, 100); //turn LED low if not connected 
+    
+    if (mqttClient.connect(thingName.c_str(), mqttUserName, mqttUserPassword, mqttFullTopic(willTopic), willQoS, willRetain, willMessage)) {
+      broadcastStatus("status", "connected");
       mqttClient.subscribe(mqttFullTopic("play"));
       mqttClient.subscribe(mqttFullTopic("stream"));
       mqttClient.subscribe(mqttFullTopic("tone"));
@@ -384,13 +403,11 @@ void mqttReconnect() {
       Serial.print(F("Connected to MQTT: "));
       Serial.println(F("mrdiynotifier"));
 #endif
-      String OnlineMessage = "Online";
-      char charBuf[OnlineMessage.length() +1];
-      OnlineMessage.toCharArray(charBuf, OnlineMessage.length() +1);
-      mqttClient.publish(mqttFullTopic(willTopic), charBuf);
-      
-      broadcastStatus("idle");
-      
+      broadcastStatus(willTopic, "Online");
+      broadcastStatus("ThingName", thingName.c_str());
+      broadcastStatus("IPAddress", WiFi.localIP().toString()); 
+      broadcastStatus("status", "idle");
+      analogWrite(LED_Pin, 255); // Turn LED HIGH once connected to MQTT
     }
   }
 }
